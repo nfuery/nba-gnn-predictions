@@ -62,8 +62,8 @@ def construct_input_sequences_and_output(z, seq_length=10, offset=1):
 def create_dataset():
     X_seq = pd.read_pickle('data/X_seq.pkl')
     G_seq = pd.read_pickle('data/G_seq.pkl')
-    player_id_to_team = pd.read_pickle('player_id2team.pkl')
-    player_id_to_position = pd.read_pickle('player_id2position.pkl')
+    player_id_to_team = pd.read_pickle('data/player_id2team.pkl')
+    player_id_to_position = pd.read_pickle('data/player_id2position.pkl')
 
     le = preprocessing.LabelEncoder()
     df_id2team = pd.DataFrame.from_dict(player_id_to_team, orient='index').apply(le.fit_transform)
@@ -80,7 +80,7 @@ def create_dataset():
 
     Gs = []
     for g in G_seq:
-        node_dict = {node: i for i, node in enumerate(G_seq[0].nodes())}
+        node_dict = {node: i for i, node in enumerate(g.nodes())}
         edges = np.array([edge.split(' ') for edge in nx.generate_edgelist(g)])[:, :2].astype(int).T
         edges = np.vectorize(node_dict.__getitem__)(edges)
         Gs.append(torch.LongTensor(edges))
@@ -112,11 +112,11 @@ def create_dataset():
 
 X_train, X_val, X_test, y_train, y_val, y_test, g_train, g_val, g_test, h_train, h_val, h_test, team_tensor, position_tensor = create_dataset()
 team_embedding_in = team_tensor.shape[-1]
-team_embedding_out = 2
+team_embedding_out = 8
 team_embedding = nn.Linear(team_embedding_in, team_embedding_out) # nn.Embedding(num_embeddings=team_embedding_in, embedding_dim=team_embedding_out)
 
 position_embedding_in = position_tensor.shape[-1]
-position_embedding_out = 2
+position_embedding_out = 8
 position_embedding = nn.Linear(position_embedding_in, position_embedding_out) # nn.Embedding(num_embeddings=position_embedding_in, embedding_dim=position_embedding_out)
 
 model_in = y_train.shape[-1] + team_embedding_out + position_embedding_out
@@ -125,12 +125,10 @@ model = GATv2TCN(in_channels=model_in,
         len_input=10,
         len_output=1,
         temporal_filter=64,
-        # kernel_tcn=2,
-        # kernel_conv2d=1,
         out_gatv2conv=32,
         dropout_tcn=0.25,
-        dropout_gatv2conv=0.25,
-        head_gatv2conv=4)
+        dropout_gatv2conv=0.5,
+        head_gatv2conv=8) # changed from 4 to 8
 
 model_name = 'gatv2tcn-team-position-embedding'
 model.load_state_dict(torch.load(f"model/{model_name}/saved_astgcn.pth"))
@@ -145,9 +143,9 @@ position_embedding_vector = position_embedding(position_tensor)
 
 X_seq = pd.read_pickle('data/X_seq.pkl')
 G_seq = pd.read_pickle('data/G_seq.pkl')
-player_id_to_team = pd.read_pickle('player_id2team.pkl')
-player_id_to_position = pd.read_pickle('player_id2position.pkl')
-player_id_to_name = pd.read_pickle('player_id2name.pkl')
+player_id_to_team = pd.read_pickle('data/player_id2team.pkl')
+player_id_to_position = pd.read_pickle('data/player_id2position.pkl')
+player_id_to_name = pd.read_pickle('data/player_id2name.pkl')
 
 Xs = np.zeros_like(X_seq)
 for i in range(X_seq.shape[1]):
@@ -155,7 +153,7 @@ for i in range(X_seq.shape[1]):
 
 Gs = []
 for g in G_seq:
-    node_dict = {node: i for i, node in enumerate(G_seq[0].nodes())}
+    node_dict = {node: i for i, node in enumerate(g.nodes())}
     edges = np.array([edge.split(' ') for edge in nx.generate_edgelist(g)])[:, :2].astype(int).T
     edges = np.vectorize(node_dict.__getitem__)(edges)
     Gs.append(torch.LongTensor(np.hstack((edges, edges[[1, 0]]))))
@@ -174,36 +172,39 @@ x_astgat = model(x, G_list)[0, ...]
 t = 0 # Time step (Chosen by us?)
 
 ## code for creating heatmap
-player_id_to_team = pd.read_pickle('player_id2team.pkl')
-player_id_to_name = pd.read_pickle('player_id2name.pkl')
-a,(b,c)=model._gatv2conv_attention(x=x[0, :, :, t], edge_index=G_list[t], return_attention_weights=True)
-b = b.detach().numpy(); c = c.detach().numpy()
-fig, ax = plt.subplots()
-att_mat = np.zeros((582, 582))
-att_mat[b[0], b[1]] = c.max(axis=1)  # head one
-att_mat -= np.diag(np.diag(att_mat))
-att_mat /= att_mat.max()
-att_mat = np.log(att_mat + 1)
-# receiver, sender = np.unravel_index(att_mat.argsort(axis=None)[::-1][:100], att_mat.shape)
-# rivals = [(s, r) for s, r in zip(sender, receiver) if (list(player_id_to_team.values())[s] == 'Suns' and list(player_id_to_team.values())[r] == 'Warriors') or (list(player_id_to_team.values())[s] == 'Warriors' and list(player_id_to_team.values())[r] == 'Suns')]
-sun_idx = np.array([idx for idx, team in enumerate(player_id_to_team.values()) if team == 'Suns'])
-warrior_idx = np.array([idx for idx, team in enumerate(player_id_to_team.values()) if team == 'Warriors'])
-att_mat = att_mat[np.hstack([sun_idx, warrior_idx])][:, np.hstack([sun_idx, warrior_idx])]
-cax = ax.matshow(att_mat, vmin=0.1, vmax=0.35, zorder=-1)
-fig.colorbar(cax)
-sender, receiver = np.unravel_index(att_mat.argsort(axis=None)[::-1][:20], att_mat.shape)
-sender, receiver = sender[np.bitwise_or(np.bitwise_and(sender<=15, receiver>15), np.bitwise_and(sender>15, receiver<=15))], receiver[np.bitwise_or(np.bitwise_and(sender<=15, receiver>15), np.bitwise_and(sender>15, receiver<=15))]
-ax.scatter(receiver, sender, marker='o', s=78, linewidth=1.5, facecolors='none', edgecolors='r')
-sw_xticks = np.array(list(player_id_to_name.values()))[np.hstack([sun_idx, warrior_idx])]
-x = np.arange(sw_xticks.shape[0])
-ax.axvline(x=15.48, ymin=0, ymax=1.3, clip_on=False, color='k', linewidth=0.5)
-ax.axhline(y=15.5, xmin=-0.3, xmax=1.0, clip_on=False, color='k', linewidth=0.5)
-ax.set_xticks(x, sw_xticks, rotation=90, fontsize=6)
-ax.set_yticks(x, sw_xticks, fontsize=6)
-# print([(list(player_id_to_name.values())[s], list(player_id_to_name.values())[r]) for s, r in rivals[:5]])
-plt.tight_layout()
-fig.savefig('Suns_Warriors_attention.png', dpi=200)
-plt.show()
+# player_id_to_team = pd.read_pickle('data/player_id2team.pkl')
+# player_id_to_name = pd.read_pickle('data/player_id2name.pkl')
+# a,(b,c)=model._gatv2conv_attention(x=x[0, :, :, t], edge_index=G_list[t], return_attention_weights=True)
+# b = b.detach().numpy(); c = c.detach().numpy()
+# fig, ax = plt.subplots()
+# N = x.shape[1]  # Number of players in this input (usually 582, but safer to get from input)
+# att_mat = np.zeros((N, N))
+# att_mat[b[0], b[1]] = c.max(axis=1)  # head one
+# att_mat -= np.diag(np.diag(att_mat))
+# att_mat /= att_mat.max()
+# att_mat = np.log(att_mat + 1)
+# # receiver, sender = np.unravel_index(att_mat.argsort(axis=None)[::-1][:100], att_mat.shape)
+# # rivals = [(s, r) for s, r in zip(sender, receiver) if (list(player_id_to_team.values())[s] == 'Suns' and list(player_id_to_team.values())[r] == 'Warriors') or (list(player_id_to_team.values())[s] == 'Warriors' and list(player_id_to_team.values())[r] == 'Suns')]
+# sun_idx = np.array([int(idx) for idx, team in enumerate(player_id_to_team.values()) if team == 'Suns'], dtype=int)
+# warrior_idx = np.array([int(idx) for idx, team in enumerate(player_id_to_team.values()) if team == 'Warriors'], dtype=int)
+# combined_idx = np.hstack([sun_idx, warrior_idx])
+# att_mat = att_mat[combined_idx][:, combined_idx]
+
+# cax = ax.matshow(att_mat, vmin=0.1, vmax=0.35, zorder=-1)
+# fig.colorbar(cax)
+# sender, receiver = np.unravel_index(att_mat.argsort(axis=None)[::-1][:20], att_mat.shape)
+# sender, receiver = sender[np.bitwise_or(np.bitwise_and(sender<=15, receiver>15), np.bitwise_and(sender>15, receiver<=15))], receiver[np.bitwise_or(np.bitwise_and(sender<=15, receiver>15), np.bitwise_and(sender>15, receiver<=15))]
+# ax.scatter(receiver, sender, marker='o', s=78, linewidth=1.5, facecolors='none', edgecolors='r')
+# sw_xticks = np.array(list(player_id_to_name.values()))[np.hstack([sun_idx, warrior_idx])]
+# x = np.arange(sw_xticks.shape[0])
+# ax.axvline(x=15.48, ymin=0, ymax=1.3, clip_on=False, color='k', linewidth=0.5)
+# ax.axhline(y=15.5, xmin=-0.3, xmax=1.0, clip_on=False, color='k', linewidth=0.5)
+# ax.set_xticks(x, sw_xticks, rotation=90, fontsize=6)
+# ax.set_yticks(x, sw_xticks, fontsize=6)
+# # print([(list(player_id_to_name.values())[s], list(player_id_to_name.values())[r]) for s, r in rivals[:5]])
+# plt.tight_layout()
+# fig.savefig('Suns_Warriors_attention.png', dpi=200)
+# plt.show()
 
 
 #GATv2TCN
@@ -221,7 +222,7 @@ for i in range(X_test.shape[0]):
     X_list = []
     G_list = []
     for j in range(SEQ_LENGTH):
-        X_list.append(torch.cat([X_val[i][:, :, j], team_embedding_vector, position_embedding_vector], dim=1))
+        X_list.append(torch.cat([X_test[i][:, :, j], team_embedding_vector, position_embedding_vector], dim=1))
         G_list.append(g_test[i][j])
     x = torch.stack(X_list, dim=-1)
     x = x[None, :, :, :]
@@ -236,7 +237,7 @@ print(f"RMSE: {test_loss_rmse/X_test.shape[0]}, MAPE: {test_loss_mape/X_test.sha
 
 
 
-player_id_to_team = pd.read_pickle('player_id2team.pkl')
+player_id_to_team = pd.read_pickle('data/player_id2team.pkl')
 from nba_api.stats.static import teams, players
 nba_teams = teams.get_teams()
 team_vec = team_embedding_vector.detach().numpy()
@@ -253,7 +254,7 @@ for i, team in enumerate(nba_teams):
 # fig.savefig('team_embedding.png', dpi=200)
 ax1.set_title('Team Embedding')
 
-player_id_to_position = pd.read_pickle('player_id2position.pkl')
+player_id_to_position = pd.read_pickle('data/player_id2position.pkl')
 position_vec = position_embedding_vector.detach().numpy()
 
 # fig, ax = plt.subplots()
