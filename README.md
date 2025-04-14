@@ -1,4 +1,4 @@
-# GATv2-TCN for NBA Player Prop Prediction
+# GATv2-TCN for NBA Player Predictions
 
 Created by **Noah Fuery** and **Chris Ton-That**
 
