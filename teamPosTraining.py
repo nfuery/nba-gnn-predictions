@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 # LR scheduler
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+# from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.autograd import Variable
 from tqdm import tqdm
 from numpy.lib.stride_tricks import sliding_window_view
@@ -61,7 +61,7 @@ def construct_input_sequences_and_output(z, seq_length=10, offset=1):
             x.append(z[i:i+seq_length])
         y = z[seq_length+offset-1:]
     
-    return x, y
+    return x, y    
 
 def create_dataset():
     # X_seq breakdown
@@ -83,36 +83,12 @@ def create_dataset():
     enc = preprocessing.OneHotEncoder()
     enc.fit(df_id2team)
     onehotlabels = enc.transform(df_id2team).toarray()
-    # team_onehot_seq = np.broadcast_to(onehotlabels, (X_seq.shape[0], X_seq.shape[1], onehotlabels.shape[-1]))
     team_tensor = Variable(torch.FloatTensor(onehotlabels))
     position_tensor = Variable(torch.FloatTensor(np.stack(list(player_id_to_position.values()), axis=0)))
 
     Xs = np.zeros_like(X_seq)
     for i in range(X_seq.shape[1]):
         Xs[:, i, :] = fill_zeros_with_last(X_seq[:, i, :])
-
-    # Standardization
-    # We do this to ensure each feature has a mean of 0 and sd of 1
-    # Therefore all features contribute equally to the model training
-    num_times, num_nodes, num_features = Xs.shape
-    scaler = StandardScaler()
-
-    # Determine split point in original sequence for fitting scaler (avoiding val/test leakage)
-    # Val starts at index 41 in X_in. X_in sequences use SEQ_LENGTH=10 points.
-    # Sequence X_in[41] uses Xs[41] to Xs[41+10-1].
-    # So, we can safely fit the scaler on data up to index 40 of Xs.
-    train_data_limit_idx = 41
-
-    # Reshape data (time * nodes, features) for fitting
-    Xs_train_flat = Xs[:train_data_limit_idx].reshape(-1, num_features)
-    scaler.fit(Xs_train_flat)
-
-    # Reshape all data and transform
-    Xs_flat = Xs.reshape(-1, num_features)
-    Xs_scaled_flat = scaler.transform(Xs_flat)
-
-    # Reshape to original shape
-    Xs_scaled = Xs_scaled_flat.reshape(num_times, num_nodes, num_features)
 
     Gs = []
     c = 0
@@ -124,33 +100,30 @@ def create_dataset():
         edges = np.vectorize(node_dict.__getitem__)(edges)
         Gs.append(torch.LongTensor(np.hstack((edges, edges[[1, 0]]))))
 
-    # Here we use the scaled data from above
-    X_in, X_out = construct_input_sequences_and_output(Xs_scaled, seq_length=SEQ_LENGTH, offset=OFFSET)
-
+    X_in, X_out = construct_input_sequences_and_output(Xs, seq_length=SEQ_LENGTH, offset=OFFSET)
     G_in, G_out = construct_input_sequences_and_output(Gs, seq_length=SEQ_LENGTH, offset=OFFSET)
+
     X_in = Variable(torch.FloatTensor(X_in))
     X_out = Variable(torch.FloatTensor(X_out))
 
     X_train, X_val, X_test = X_in[:31], X_in[41:41+16], X_in[41+26:]
     y_train, y_val, y_test = X_out[:31], X_out[41:41+16], X_out[41+26:]
 
-    # Splitting data
     g_train = G_in[:31]
-    g_val = G_in[41:41+16] 
+    g_val = G_in[41:41+16]
     g_test = G_in[41+26:]
     h_train = G_out[:31]
     h_val = G_out[41:41+16]
     h_test = G_out[41+26:]
 
-    
     print(X_train.shape, X_val.shape, X_test.shape)
     print(f"g_train length: {len(g_train)}, g_val length: {len(g_val)}, g_test length: {len(g_test)}")
     print(f"h_train length: {len(h_train)}, y_train length: {len(y_train)}")
 
-    return X_train, X_val, X_test, y_train, y_val, y_test, g_train, g_val, g_test, h_train, h_val, h_test, team_tensor, position_tensor, scaler #, team_train, team_val, team_test
+    return X_train, X_val, X_test, y_train, y_val, y_test, g_train, g_val, g_test, h_train, h_val, h_test, team_tensor, position_tensor
 
 
-X_train, X_val, X_test, y_train, y_val, y_test, g_train, g_val, g_test, h_train, h_val, h_test, team_tensor, position_tensor, scaler = create_dataset()
+X_train, X_val, X_test, y_train, y_val, y_test, g_train, g_val, g_test, h_train, h_val, h_test, team_tensor, position_tensor = create_dataset()
 team_embedding_in = team_tensor.shape[-1]
 team_embedding_out = 8
 team_embedding = nn.Linear(team_embedding_in, team_embedding_out) # nn.Embedding(num_embeddings=team_embedding_in, embedding_dim=team_embedding_out)
@@ -182,7 +155,7 @@ model = GATv2TCN(in_channels=model_in,
         out_gatv2conv=32,
         dropout_tcn=0.25,
         dropout_gatv2conv=0.5,
-        head_gatv2conv=8) # Was initially 4, changed to 8
+        head_gatv2conv=4)
 
 model_name = 'gatv2tcn-team-position-embedding'
 
@@ -200,7 +173,7 @@ optimizer = torch.optim.Adam(parameters, lr=0.01, weight_decay=0.001)
     # Dynamically adjusts learning rate during training
     #   LR: how fast a model adjusts its weights in response to the loss function gradient
 # Patience subject to change
-scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=15, verbose=True)
+# scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.2, patience=15, verbose=True)
 
 min_val_loss = np.inf
 min_val_iter = -1
@@ -297,9 +270,6 @@ for epoch in tqdm(range(EPOCHS)):
     #     # display.clear_output(wait=True)
     #     # display.display(fig)
 
-    # Step scheduler based on val loss
-    scheduler.step(epoch_avg_val_loss)
-
     if min_val_loss > epoch_avg_val_loss:
         print(f"Validation Loss Decreased({min_val_loss:.5f}--->{epoch_avg_val_loss:.5f}) \t Saving The Model")
         min_val_loss = epoch_avg_val_loss
@@ -309,8 +279,19 @@ for epoch in tqdm(range(EPOCHS)):
         torch.save(team_embedding.state_dict(), f"model/{model_name}/team_embedding.pth")
         torch.save(position_embedding.state_dict(), f"model/{model_name}/position_embedding.pth")
 
+    # Early stopping
+    if epoch - min_val_iter > 20:
+        print(f"Early stopping at epoch {epoch} (no improvement since {min_val_iter})")
+        break
+
 print(min_val_loss, min_val_iter)
 
+# Displaying train and validation loss plots
+plt.plot(train_loss_history, label='Train')
+plt.plot(val_loss_history, label='Val')
+plt.legend()
+plt.title('Loss over Epochs')
+plt.show()
 
 #GATv2TCN
 astgcn_test = copy.deepcopy(model)
